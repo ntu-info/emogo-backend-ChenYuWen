@@ -48,7 +48,9 @@
         <h3 class="section-title">Download Videos</h3>
 
         <!-- Download all videos as ZIP -->
-        <a href="/export_videos_zip" class="btn btn-danger mb-3 px-4">Download ALL Videos (zip)</a>
+        <a href="/export_videos_zip" class="btn btn-danger mb-3 px-4">
+            Download ALL Videos (zip)
+        </a>
 
         <div class="card shadow-sm">
             <div class="card-body">
@@ -61,12 +63,12 @@
 
                         <div>
                             <strong>User:</strong> {{ item.user_id }} <br>
-                            <strong>ID:</strong> {{ item._id }} <br>
+                            <strong>Video ID:</strong> {{ item._id }} <br>
                             <strong>Time:</strong> {{ item.timestamp }}
                         </div>
 
-                        <!-- 正確下載路徑：用 vlog_id -->
-                        <a href="/download_video?vlog_id={{ item._id }}" 
+                        <!-- 🔥 Download by vlog_id -->
+                        <a href="/download_video?vlog_id={{ item._id }}"
                            class="btn btn-outline-primary">
                             Download Video
                         </a>
