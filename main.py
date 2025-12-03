@@ -6,7 +6,7 @@ import os
 import time
 import shutil
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -15,6 +15,29 @@ from fastapi.responses import StreamingResponse
 from io import StringIO, BytesIO
 import zipfile
 
+# ------------------------------
+#  時區轉換函式（UTC → 台灣 UTC+8）
+# ------------------------------
+def to_tw(ts_str):
+    try:
+        # 去掉 Z、小數部分
+        clean = ts_str.replace("Z", "").split(".")[0]
+        
+        # 解析成 datetime（沒有時區）
+        ts = datetime.fromisoformat(clean)
+
+        # 「強制當成 UTC」
+        ts = ts.replace(tzinfo=datetime.timezone.utc)
+
+        # 換算成台灣 UTC+8
+        ts_tw = ts.astimezone(datetime.timezone(timedelta(hours=8)))
+
+        return ts_tw.strftime("%Y-%m-%d %H:%M:%S")
+
+    except Exception as e:
+        print("Time convert error:", e)
+        return ts_str
+    
 # --------------------------
 # MongoDB Configuration
 # --------------------------
@@ -69,20 +92,23 @@ class GPS(BaseModel):
 # Endpoints
 # --------------------------
 
+# -------------------------- Endpoints --------------------------
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    # 從 MongoDB 抓 vlog
     vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
+
+    # 轉成台灣時間
+    for v in vlogs:
+        v["timestamp"] = to_tw(v["timestamp"])
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "vlogs": vlogs
-        }
+        {"request": request, "vlogs": vlogs}
     )
 
-# ---- 1. Upload Vlog (影片) ----
+
+# ---- 1. Upload Vlog ----
 @app.post("/upload_vlog")
 async def upload_vlog(user_id: str = Form(...), file: UploadFile = File(...)):
     UPLOAD_DIR = "uploads"
@@ -96,7 +122,7 @@ async def upload_vlog(user_id: str = Form(...), file: UploadFile = File(...)):
     vlog_record = {
         "user_id": user_id,
         "filename": file_path,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat()   # 存 UTC → 下載時轉台灣時間
     }
 
     await app.mongodb["vlogs"].insert_one(vlog_record)
@@ -110,45 +136,39 @@ async def upload_sentiment(data: Sentiment):
     await app.mongodb["sentiments"].insert_one(data.dict())
     return {"status": "ok"}
 
+
 # ---- 3. Upload GPS ----
 @app.post("/upload_gps")
 async def upload_gps(data: GPS):
     await app.mongodb["gps"].insert_one(data.dict())
     return {"status": "ok"}
 
-# ---- 4. Export Everything ----
+
+# ---- 4. Export Everything (JSON) ----
 @app.get("/export")
 async def export_data():
+    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
+    sentiments = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
+    gps = await app.mongodb["gps"].find({}, {"_id": 0}).to_list(9999)
 
-    # --- 1. 取出資料 ---
-    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(length=9999)
-    sentiments = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(length=9999)
-    gps = await app.mongodb["gps"].find({}, {"_id": 0}).to_list(length=9999)
-
-    # --- 2. 統一格式 ---
-
-    # 處理 vlog timestamp
+    # 轉成台灣時間
     for v in vlogs:
-        v["timestamp"] = v["timestamp"].replace("T", " ").split(".")[0]
+        v["timestamp"] = to_tw(v["timestamp"])
 
-    # 處理 sentiment timestamp
     for s in sentiments:
-        s["timestamp"] = s["timestamp"].replace("T", " ").split(".")[0]
+        s["timestamp"] = to_tw(s["timestamp"])
 
-    # 處理 gps timestamp + 小數點
     for g in gps:
-        g["timestamp"] = g["timestamp"].replace("T", " ").split(".")[0]
+        g["timestamp"] = to_tw(g["timestamp"])
         g["lat"] = round(float(g["lat"]), 4)
         g["lng"] = round(float(g["lng"]), 4)
 
-    # --- 3. 整理成匯出格式 ---
     data = {
         "sentiments": sentiments,
         "gps": gps,
         "vlogs": vlogs
     }
 
-    # --- 4. 美化 JSON ---
     pretty_json = json.dumps(data, indent=4, ensure_ascii=False)
 
     return Response(
@@ -158,42 +178,41 @@ async def export_data():
     )
 
 
+# ---- Dashboard ----
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    # 從 MongoDB 抓所有 vlog 紀錄
-    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(length=9999)
+    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
 
-    # 回傳前面建好的 dashboard.html
+    for v in vlogs:
+        v["timestamp"] = to_tw(v["timestamp"])
+
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "vlogs": vlogs
-        }
+        {"request": request, "vlogs": vlogs}
     )
 
+
+# ---- Download Single Video ----
 @app.get("/download_video")
 async def download_video(path: str):
-    """
-    path 直接用資料庫裡存的 filename 欄位（如 uploads/vivian_1764432214.mp4）
-    dashboard.html 也已經用這個當 query string 了。
-    """
+
     if not os.path.exists(path):
         return {"error": "File not found"}
 
     return FileResponse(
         path,
         media_type="video/mp4",
-        filename=os.path.basename(path)  # 下載時顯示的檔名
+        filename=os.path.basename(path)
     )
 
+
+# ---- Export Sentiments CSV ----
 @app.get("/export_sentiments_csv")
 async def export_sentiments_csv():
     data = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
 
-    # format timestamps
     for d in data:
-        d["timestamp"] = d["timestamp"].replace("T", " ").split(".")[0]
+        d["timestamp"] = to_tw(d["timestamp"])
 
     output = StringIO()
     writer = csv.DictWriter(output, fieldnames=["timestamp", "user_id", "score"])
@@ -201,7 +220,6 @@ async def export_sentiments_csv():
     writer.writerows(data)
 
     output.seek(0)
-
     return StreamingResponse(
         output,
         media_type="text/csv",
@@ -209,15 +227,15 @@ async def export_sentiments_csv():
     )
 
 
+# ---- Export GPS CSV ----
 @app.get("/export_gps_csv")
 async def export_gps_csv():
     data = await app.mongodb["gps"].find({}, {"_id": 0}).to_list(9999)
 
-    # format gps values & timestamp
     for d in data:
+        d["timestamp"] = to_tw(d["timestamp"])
         d["lat"] = round(float(d["lat"]), 4)
         d["lng"] = round(float(d["lng"]), 4)
-        d["timestamp"] = d["timestamp"].replace("T", " ").split(".")[0]
 
     output = StringIO()
     writer = csv.DictWriter(output, fieldnames=["timestamp", "user_id", "lat", "lng"])
@@ -225,7 +243,6 @@ async def export_gps_csv():
     writer.writerows(data)
 
     output.seek(0)
-
     return StreamingResponse(
         output,
         media_type="text/csv",
@@ -233,6 +250,7 @@ async def export_gps_csv():
     )
 
 
+# ---- Export ALL CSV ----
 @app.get("/export_csv_all")
 async def export_csv_all():
     sentiments = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
@@ -240,11 +258,9 @@ async def export_csv_all():
 
     merged = {}
 
-    # ---- 合併 sentiments ----
+    # Sentiments
     for s in sentiments:
-        ts_raw = s["timestamp"]
-        ts = ts_raw.replace("T", " ").split(".")[0]   # 轉成好看格式
-
+        ts = to_tw(s["timestamp"])
         if ts not in merged:
             merged[ts] = {
                 "timestamp": ts,
@@ -256,11 +272,9 @@ async def export_csv_all():
         else:
             merged[ts]["sentiment"] = s["score"]
 
-    # ---- 合併 GPS ----
+    # GPS
     for g in gps:
-        ts_raw = g["timestamp"]
-        ts = ts_raw.replace("T", " ").split(".")[0]
-
+        ts = to_tw(g["timestamp"])
         lat = round(float(g["lat"]), 4)
         lng = round(float(g["lng"]), 4)
 
@@ -284,7 +298,6 @@ async def export_csv_all():
     writer.writerows(rows)
 
     output.seek(0)
-
     return StreamingResponse(
         output,
         media_type="text/csv",
@@ -292,12 +305,12 @@ async def export_csv_all():
     )
 
 
+# ---- Export Videos ZIP ----
 @app.get("/export_videos_zip")
 async def export_videos_zip():
     vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
 
     zip_buffer = BytesIO()
-
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
         for item in vlogs:
             filepath = item["filename"]
@@ -305,7 +318,6 @@ async def export_videos_zip():
                 zipf.write(filepath, arcname=os.path.basename(filepath))
 
     zip_buffer.seek(0)
-
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
