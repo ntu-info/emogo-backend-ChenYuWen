@@ -2,16 +2,11 @@ from fastapi import FastAPI, UploadFile, File, Form, Request
 from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
-import os
-import time
-import json
 from datetime import datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import (
-    HTMLResponse, FileResponse, Response,
-    StreamingResponse
-)
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
+import json
 import csv
 from io import StringIO, BytesIO
 import zipfile
@@ -36,7 +31,6 @@ MONGODB_URI = "mongodb+srv://tren:psychinfo@cluster0.5igl1b7.mongodb.net/?retryW
 DB_NAME = "EmogoBackend"
 
 app = FastAPI()
-
 templates = Jinja2Templates(directory="templates")
 
 app.add_middleware(
@@ -47,7 +41,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Connect MongoDB
+# 連線 MongoDB
 @app.on_event("startup")
 async def startup_db_client():
     app.mongodb_client = AsyncIOMotorClient(MONGODB_URI)
@@ -60,7 +54,7 @@ async def shutdown_db_client():
     print("❎ MongoDB connection closed")
 
 # ======================================================
-# Models
+# Pydantic Models
 # ======================================================
 class Sentiment(BaseModel):
     user_id: str
@@ -76,7 +70,6 @@ class GPS(BaseModel):
 # ======================================================
 # Dashboard
 # ======================================================
-
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     vlogs = await app.mongodb["vlogs"].find({}, {"video": 0}).to_list(9999)
@@ -90,16 +83,15 @@ async def home(request: Request):
     )
 
 # ======================================================
-# 1. 上傳 Vlog（影片以 Binary 保存）
+# 1. 上傳 Vlog — Binary 儲存
 # ======================================================
-
 @app.post("/upload_vlog")
 async def upload_vlog(user_id: str = Form(...), file: UploadFile = File(...)):
-    video_bytes = await file.read()  # 讀 binary
+    video_bytes = await file.read()
 
     vlog_record = {
         "user_id": user_id,
-        "video": video_bytes,     # ⭐ 直接 binary 存進 MongoDB
+        "video": video_bytes,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -110,7 +102,6 @@ async def upload_vlog(user_id: str = Form(...), file: UploadFile = File(...)):
 # ======================================================
 # 2. 上傳 Sentiment
 # ======================================================
-
 @app.post("/upload_sentiment")
 async def upload_sentiment(data: Sentiment):
     await app.mongodb["sentiments"].insert_one(data.dict())
@@ -119,7 +110,6 @@ async def upload_sentiment(data: Sentiment):
 # ======================================================
 # 3. 上傳 GPS
 # ======================================================
-
 @app.post("/upload_gps")
 async def upload_gps(data: GPS):
     await app.mongodb["gps"].insert_one(data.dict())
@@ -128,19 +118,15 @@ async def upload_gps(data: GPS):
 # ======================================================
 # 4. 匯出 JSON
 # ======================================================
-
 @app.get("/export")
 async def export_data():
+
     vlogs = await app.mongodb["vlogs"].find({}, {"video": 0, "_id": 0}).to_list(9999)
     sentiments = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
     gps = await app.mongodb["gps"].find({}, {"_id": 0}).to_list(9999)
 
-    for v in vlogs:
-        v["timestamp"] = to_tw(v["timestamp"])
-
-    for s in sentiments:
-        s["timestamp"] = to_tw(s["timestamp"])
-
+    for v in vlogs: v["timestamp"] = to_tw(v["timestamp"])
+    for s in sentiments: s["timestamp"] = to_tw(s["timestamp"])
     for g in gps:
         g["timestamp"] = to_tw(g["timestamp"])
         g["lat"] = round(float(g["lat"]), 4)
@@ -152,18 +138,15 @@ async def export_data():
         "vlogs": vlogs
     }
 
-    pretty_json = json.dumps(data, indent=4, ensure_ascii=False)
-
     return Response(
-        content=pretty_json,
+        content=json.dumps(data, indent=4, ensure_ascii=False),
         media_type="application/json",
         headers={"Content-Disposition": "attachment; filename=Emogo_export.json"}
     )
 
 # ======================================================
-# 5. 單筆影片下載
+# 5. 單筆影片下載（Binary）
 # ======================================================
-
 @app.get("/download_video")
 async def download_video(vlog_id: str):
 
@@ -181,20 +164,18 @@ async def download_video(vlog_id: str):
     )
 
 # ======================================================
-# 6. 匯出所有影片（ZIP）
+# 6. 所有影片 ZIP
 # ======================================================
-
 @app.get("/export_videos_zip")
 async def export_videos_zip():
     vlogs = await app.mongodb["vlogs"].find({}).to_list(9999)
 
     zip_buffer = BytesIO()
-
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
         for item in vlogs:
             vid = item["video"]
             filename = f"{item['user_id']}_{item['_id']}.mp4"
-            zipf.writestr(filename, vid)  # ⭐ 寫入 binary
+            zipf.writestr(filename, vid)
 
     zip_buffer.seek(0)
 
@@ -205,9 +186,8 @@ async def export_videos_zip():
     )
 
 # ======================================================
-# 7. 匯出 CSV（Sentiments / GPS / ALL）
+# 7. CSV 匯出（Sentiments / GPS / ALL）
 # ======================================================
-
 @app.get("/export_sentiments_csv")
 async def export_sentiments_csv():
     data = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
@@ -219,8 +199,8 @@ async def export_sentiments_csv():
     writer = csv.DictWriter(output, fieldnames=["timestamp", "user_id", "score"])
     writer.writeheader()
     writer.writerows(data)
-
     output.seek(0)
+
     return StreamingResponse(
         output,
         media_type="text/csv",
@@ -229,6 +209,7 @@ async def export_sentiments_csv():
 
 @app.get("/export_gps_csv")
 async def export_gps_csv():
+
     data = await app.mongodb["gps"].find({}, {"_id": 0}).to_list(9999)
 
     for d in data:
@@ -240,8 +221,8 @@ async def export_gps_csv():
     writer = csv.DictWriter(output, fieldnames=["timestamp", "user_id", "lat", "lng"])
     writer.writeheader()
     writer.writerows(data)
-
     output.seek(0)
+
     return StreamingResponse(
         output,
         media_type="text/csv",
@@ -250,6 +231,7 @@ async def export_gps_csv():
 
 @app.get("/export_csv_all")
 async def export_csv_all():
+
     sentiments = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
     gps = await app.mongodb["gps"].find({}, {"_id": 0}).to_list(9999)
 
@@ -274,6 +256,7 @@ async def export_csv_all():
             "lat": round(float(g["lat"]), 4),
             "lng": round(float(g["lng"]), 4)
         })
+
         merged[ts]["lat"] = round(float(g["lat"]), 4)
         merged[ts]["lng"] = round(float(g["lng"]), 4)
 
@@ -283,8 +266,8 @@ async def export_csv_all():
     writer = csv.DictWriter(output, fieldnames=["timestamp", "user_id", "sentiment", "lat", "lng"])
     writer.writeheader()
     writer.writerows(rows)
-
     output.seek(0)
+
     return StreamingResponse(
         output,
         media_type="text/csv",
