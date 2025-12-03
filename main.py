@@ -69,9 +69,18 @@ class GPS(BaseModel):
 # Endpoints
 # --------------------------
 
-@app.get("/")
-async def home():
-    return {"message": "EmoGo Backend is running!"}
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    # 從 MongoDB 抓 vlog
+    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
+
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "vlogs": vlogs
+        }
+    )
 
 # ---- 1. Upload Vlog (影片) ----
 @app.post("/upload_vlog")
