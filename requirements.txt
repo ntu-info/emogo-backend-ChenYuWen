@@ -1,0 +1,6 @@
+fastapi[all]
+uvicorn
+motor
+pydantic
+jinja2
+python-multipart
