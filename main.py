@@ -18,24 +18,25 @@ import zipfile
 # ------------------------------
 #  時區轉換函式（UTC → 台灣 UTC+8）
 # ------------------------------
-def to_tw(ts_str):
+def to_tw(ts_str: str) -> str:
     try:
-        # 去掉 Z、小數部分
-        clean = ts_str.replace("Z", "").split(".")[0]
-        
-        # 解析成 datetime（沒有時區）
-        ts = datetime.fromisoformat(clean)
+        # 1. 拿掉 Z 和小數秒
+        clean = ts_str.replace("Z", "").split(".")[0]   # "2025-11-29T15:54:33"
 
-        # 「強制當成 UTC」
-        ts = ts.replace(tzinfo=datetime.timezone.utc)
+        # 2. 轉成 datetime（naive）
+        dt = datetime.fromisoformat(clean)
 
-        # 換算成台灣 UTC+8
-        ts_tw = ts.astimezone(datetime.timezone(timedelta(hours=8)))
+        # 3. 宣告這是 UTC 時間
+        dt_utc = dt.replace(tzinfo=timezone.utc)
 
-        return ts_tw.strftime("%Y-%m-%d %H:%M:%S")
+        # 4. 轉成台灣時間 (UTC+8)
+        dt_tw = dt_utc.astimezone(timezone(timedelta(hours=8)))
+
+        # 5. 輸出成字串
+        return dt_tw.strftime("%Y-%m-%d %H:%M:%S")
 
     except Exception as e:
-        print("Time convert error:", e)
+        print("Time convert error:", e, ts_str)
         return ts_str
     
 # --------------------------
