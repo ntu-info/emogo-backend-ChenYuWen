@@ -306,3 +306,18 @@ async def export_csv_all():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=Emogo_export.csv"}
     )
+
+# ======================================================
+# 8. 清理舊 vlog（沒有 video 的舊格式）
+# ======================================================
+@app.delete("/cleanup_old_vlogs")
+async def cleanup_old_vlogs():
+    result = await app.mongodb["vlogs"].delete_many({
+        "video": {"$exists": False}
+    })
+
+    return {
+        "status": "ok",
+        "deleted_count": result.deleted_count,
+        "message": f"Deleted {result.deleted_count} old vlog records"
+    }

@@ -41,6 +41,26 @@
             <a href="/export_csv_all" class="btn btn-success px-4">ALL_Sentiments & GPS (csv)</a>
             <a href="/export" class="btn btn-secondary px-4">ALL_Sentiments & GPS (json)</a>
         </div>
+        
+                <!-- Clean Old Vlogs Button -->
+        <button class="btn btn-warning mb-3 px-4"
+                onclick="cleanupOldVlogs()">
+            Clean Old Vlogs (Remove invalid records)
+        </button>
+
+        <script>
+        function cleanupOldVlogs() {
+            if (!confirm("確定要刪除所有舊 vlog 嗎？ (無法復原)")) return;
+
+            fetch("/cleanup_old_vlogs", { method: "DELETE" })
+                .then(res => res.json())
+                .then(data => {
+                    alert("清除成功！共刪除 " + data.deleted_count + " 筆舊 vlog");
+                    location.reload();
+                })
+                .catch(err => alert("Error: " + err));
+        }
+        </script>
 
         <!-- ========================================================= -->
         <!-- Videos Section -->
