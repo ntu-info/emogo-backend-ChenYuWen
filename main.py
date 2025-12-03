@@ -1,55 +1,44 @@
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
-import base64
+from bson import ObjectId
 import os
 import time
-import shutil
 import json
 from datetime import datetime, timedelta, timezone
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
+from fastapi.responses import (
+    HTMLResponse, FileResponse, Response,
+    StreamingResponse
+)
 from fastapi.templating import Jinja2Templates
 import csv
-from fastapi.responses import StreamingResponse
 from io import StringIO, BytesIO
 import zipfile
 
-# ------------------------------
-#  時區轉換函式（UTC → 台灣 UTC+8）
-# ------------------------------
-def to_tw(ts_str: str) -> str:
+# ======================================================
+# 時區處理（UTC → 台灣）
+# ======================================================
+def to_tw(ts_str):
     try:
-        # 1. 拿掉 Z 和小數秒
-        clean = ts_str.replace("Z", "").split(".")[0]   # "2025-11-29T15:54:33"
-
-        # 2. 轉成 datetime（naive）
-        dt = datetime.fromisoformat(clean)
-
-        # 3. 宣告這是 UTC 時間
-        dt_utc = dt.replace(tzinfo=timezone.utc)
-
-        # 4. 轉成台灣時間 (UTC+8)
-        dt_tw = dt_utc.astimezone(timezone(timedelta(hours=8)))
-
-        # 5. 輸出成字串
-        return dt_tw.strftime("%Y-%m-%d %H:%M:%S")
-
-    except Exception as e:
-        print("Time convert error:", e, ts_str)
+        clean = ts_str.replace("Z", "").split(".")[0]
+        ts = datetime.fromisoformat(clean)
+        ts = ts.replace(tzinfo=timezone.utc)
+        ts_tw = ts.astimezone(timezone(timedelta(hours=8)))
+        return ts_tw.strftime("%Y-%m-%d %H:%M:%S")
+    except:
         return ts_str
-    
-# --------------------------
-# MongoDB Configuration
-# --------------------------
 
+# ======================================================
+# MongoDB 設定
+# ======================================================
 MONGODB_URI = "mongodb+srv://tren:psychinfo@cluster0.5igl1b7.mongodb.net/?retryWrites=true&w=majority"
-DB_NAME = "EmogoBackend"   # <--- 你自己的 database 名字（Compass 會看到）
+DB_NAME = "EmogoBackend"
 
 app = FastAPI()
 
 templates = Jinja2Templates(directory="templates")
-# Allow CORS (讓前端能連後端)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -58,26 +47,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --------------------------
-# Connect MongoDB on startup
-# --------------------------
-
+# Connect MongoDB
 @app.on_event("startup")
 async def startup_db_client():
     app.mongodb_client = AsyncIOMotorClient(MONGODB_URI)
     app.mongodb = app.mongodb_client[DB_NAME]
     print("✅ Connected to MongoDB")
 
-
 @app.on_event("shutdown")
 async def shutdown_db_client():
     app.mongodb_client.close()
     print("❎ MongoDB connection closed")
 
-# --------------------------
-# Pydantic Models
-# --------------------------
-
+# ======================================================
+# Models
+# ======================================================
 class Sentiment(BaseModel):
     user_id: str
     score: int
@@ -89,17 +73,14 @@ class GPS(BaseModel):
     lng: float
     timestamp: str
 
-# --------------------------
-# Endpoints
-# --------------------------
-
-# -------------------------- Endpoints --------------------------
+# ======================================================
+# Dashboard
+# ======================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
+    vlogs = await app.mongodb["vlogs"].find({}, {"video": 0}).to_list(9999)
 
-    # 轉成台灣時間
     for v in vlogs:
         v["timestamp"] = to_tw(v["timestamp"])
 
@@ -108,51 +89,52 @@ async def home(request: Request):
         {"request": request, "vlogs": vlogs}
     )
 
+# ======================================================
+# 1. 上傳 Vlog（影片以 Binary 保存）
+# ======================================================
 
-# ---- 1. Upload Vlog ----
 @app.post("/upload_vlog")
 async def upload_vlog(user_id: str = Form(...), file: UploadFile = File(...)):
-    UPLOAD_DIR = "uploads"
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-    file_path = os.path.join(UPLOAD_DIR, f"{user_id}_{int(time.time())}.mp4")
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    video_bytes = await file.read()  # 讀 binary
 
     vlog_record = {
         "user_id": user_id,
-        "filename": file_path,
-        "timestamp": datetime.utcnow().isoformat()   # 存 UTC → 下載時轉台灣時間
+        "video": video_bytes,     # ⭐ 直接 binary 存進 MongoDB
+        "timestamp": datetime.utcnow().isoformat()
     }
 
-    await app.mongodb["vlogs"].insert_one(vlog_record)
+    result = await app.mongodb["vlogs"].insert_one(vlog_record)
 
-    return {"status": "ok", "path": file_path}
+    return {"status": "ok", "vlog_id": str(result.inserted_id)}
 
+# ======================================================
+# 2. 上傳 Sentiment
+# ======================================================
 
-# ---- 2. Upload Sentiment ----
 @app.post("/upload_sentiment")
 async def upload_sentiment(data: Sentiment):
     await app.mongodb["sentiments"].insert_one(data.dict())
     return {"status": "ok"}
 
+# ======================================================
+# 3. 上傳 GPS
+# ======================================================
 
-# ---- 3. Upload GPS ----
 @app.post("/upload_gps")
 async def upload_gps(data: GPS):
     await app.mongodb["gps"].insert_one(data.dict())
     return {"status": "ok"}
 
+# ======================================================
+# 4. 匯出 JSON
+# ======================================================
 
-# ---- 4. Export Everything (JSON) ----
 @app.get("/export")
 async def export_data():
-    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
+    vlogs = await app.mongodb["vlogs"].find({}, {"video": 0, "_id": 0}).to_list(9999)
     sentiments = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
     gps = await app.mongodb["gps"].find({}, {"_id": 0}).to_list(9999)
 
-    # 轉成台灣時間
     for v in vlogs:
         v["timestamp"] = to_tw(v["timestamp"])
 
@@ -178,36 +160,54 @@ async def export_data():
         headers={"Content-Disposition": "attachment; filename=Emogo_export.json"}
     )
 
+# ======================================================
+# 5. 單筆影片下載
+# ======================================================
 
-# ---- Dashboard ----
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
-
-    for v in vlogs:
-        v["timestamp"] = to_tw(v["timestamp"])
-
-    return templates.TemplateResponse(
-        "dashboard.html",
-        {"request": request, "vlogs": vlogs}
-    )
-
-
-# ---- Download Single Video ----
 @app.get("/download_video")
-async def download_video(path: str):
+async def download_video(vlog_id: str):
 
-    if not os.path.exists(path):
-        return {"error": "File not found"}
+    vlog = await app.mongodb["vlogs"].find_one({"_id": ObjectId(vlog_id)})
 
-    return FileResponse(
-        path,
+    if not vlog:
+        return {"error": "Video not found"}
+
+    video_bytes = vlog["video"]
+
+    return Response(
+        content=video_bytes,
         media_type="video/mp4",
-        filename=os.path.basename(path)
+        headers={"Content-Disposition": "attachment; filename=video.mp4"}
     )
 
+# ======================================================
+# 6. 匯出所有影片（ZIP）
+# ======================================================
 
-# ---- Export Sentiments CSV ----
+@app.get("/export_videos_zip")
+async def export_videos_zip():
+    vlogs = await app.mongodb["vlogs"].find({}).to_list(9999)
+
+    zip_buffer = BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for item in vlogs:
+            vid = item["video"]
+            filename = f"{item['user_id']}_{item['_id']}.mp4"
+            zipf.writestr(filename, vid)  # ⭐ 寫入 binary
+
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=all_videos.zip"}
+    )
+
+# ======================================================
+# 7. 匯出 CSV（Sentiments / GPS / ALL）
+# ======================================================
+
 @app.get("/export_sentiments_csv")
 async def export_sentiments_csv():
     data = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
@@ -227,8 +227,6 @@ async def export_sentiments_csv():
         headers={"Content-Disposition": "attachment; filename=sentiments.csv"}
     )
 
-
-# ---- Export GPS CSV ----
 @app.get("/export_gps_csv")
 async def export_gps_csv():
     data = await app.mongodb["gps"].find({}, {"_id": 0}).to_list(9999)
@@ -250,8 +248,6 @@ async def export_gps_csv():
         headers={"Content-Disposition": "attachment; filename=gps.csv"}
     )
 
-
-# ---- Export ALL CSV ----
 @app.get("/export_csv_all")
 async def export_csv_all():
     sentiments = await app.mongodb["sentiments"].find({}, {"_id": 0}).to_list(9999)
@@ -259,37 +255,27 @@ async def export_csv_all():
 
     merged = {}
 
-    # Sentiments
     for s in sentiments:
         ts = to_tw(s["timestamp"])
-        if ts not in merged:
-            merged[ts] = {
-                "timestamp": ts,
-                "user_id": s["user_id"],
-                "sentiment": s["score"],
-                "lat": "",
-                "lng": ""
-            }
-        else:
-            merged[ts]["sentiment"] = s["score"]
+        merged.setdefault(ts, {
+            "timestamp": ts,
+            "user_id": s["user_id"],
+            "sentiment": s["score"],
+            "lat": "",
+            "lng": ""
+        })
 
-    # GPS
     for g in gps:
         ts = to_tw(g["timestamp"])
-        lat = round(float(g["lat"]), 4)
-        lng = round(float(g["lng"]), 4)
-
-        if ts not in merged:
-            merged[ts] = {
-                "timestamp": ts,
-                "user_id": g["user_id"],
-                "sentiment": "",
-                "lat": lat,
-                "lng": lng
-            }
-        else:
-            merged[ts]["lat"] = lat
-            merged[ts]["lng"] = lng
+        merged.setdefault(ts, {
+            "timestamp": ts,
+            "user_id": g["user_id"],
+            "sentiment": "",
+            "lat": round(float(g["lat"]), 4),
+            "lng": round(float(g["lng"]), 4)
+        })
+        merged[ts]["lat"] = round(float(g["lat"]), 4)
+        merged[ts]["lng"] = round(float(g["lng"]), 4)
 
     rows = sorted(merged.values(), key=lambda x: x["timestamp"])
 
@@ -303,24 +289,4 @@ async def export_csv_all():
         output,
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=Emogo_export.csv"}
-    )
-
-
-# ---- Export Videos ZIP ----
-@app.get("/export_videos_zip")
-async def export_videos_zip():
-    vlogs = await app.mongodb["vlogs"].find({}, {"_id": 0}).to_list(9999)
-
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for item in vlogs:
-            filepath = item["filename"]
-            if os.path.exists(filepath):
-                zipf.write(filepath, arcname=os.path.basename(filepath))
-
-    zip_buffer.seek(0)
-    return StreamingResponse(
-        zip_buffer,
-        media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=all_videos.zip"}
     )
