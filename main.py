@@ -155,7 +155,8 @@ async def download_video(vlog_id: str):
     if not vlog:
         return {"error": "Video not found"}
 
-    video_bytes = vlog["video"]
+    # MongoDB 取出的 binary 是 memoryview，需要轉換
+    video_bytes = bytes(vlog["video"])
 
     return Response(
         content=video_bytes,
@@ -171,11 +172,12 @@ async def export_videos_zip():
     vlogs = await app.mongodb["vlogs"].find({}).to_list(9999)
 
     zip_buffer = BytesIO()
+
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
         for item in vlogs:
-            vid = item["video"]
+            video_bytes = bytes(item["video"])   # ⭐ 修正點
             filename = f"{item['user_id']}_{item['_id']}.mp4"
-            zipf.writestr(filename, vid)
+            zipf.writestr(filename, video_bytes)
 
     zip_buffer.seek(0)
 
@@ -184,6 +186,7 @@ async def export_videos_zip():
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=all_videos.zip"}
     )
+
 
 # ======================================================
 # 7. CSV 匯出（Sentiments / GPS / ALL）
